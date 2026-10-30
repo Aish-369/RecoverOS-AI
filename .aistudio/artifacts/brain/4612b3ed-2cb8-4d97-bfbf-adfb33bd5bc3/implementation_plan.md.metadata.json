@@ -1,0 +1,6 @@
+{
+  "summary":  "Comprehensive implementation plan for RecoverOS AI, an AI-powered revenue recovery copilot for Indian B2B digital agencies and IT consultancies. Focuses on client-side CSV import, deterministic aging calculation (Section 43B(h) compliance, 0-30/31-45/45+ days), human-in-the-loop follow-up draft generator, and a modern 10-screen SaaS interface with soft pastel design tokens.",
+  "updatedAt":  "2026-10-30T06:01:57.860050616Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

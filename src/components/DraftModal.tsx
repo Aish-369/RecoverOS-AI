@@ -92,7 +92,27 @@ export const DraftModal: React.FC<DraftModalProps> = ({
   const handleExecuteWhatsApp = () => {
     if (!phoneValidation.isValid) return;
     const waUrl = buildWhatsAppWebUrl(recipientPhone, bodyText);
-    window.open(waUrl, '_blank', 'noopener,noreferrer');
+    try {
+      const newWin = window.open(waUrl, '_blank', 'noopener,noreferrer');
+      if (!newWin || newWin.closed || typeof newWin.closed === 'undefined') {
+        const link = document.createElement('a');
+        link.href = waUrl;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
+    } catch {
+      const link = document.createElement('a');
+      link.href = waUrl;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
     onRecordActionDispatched(invoice, 'whatsapp', {
       phone: recipientPhone !== invoice.customerPhone ? recipientPhone : undefined,
     });

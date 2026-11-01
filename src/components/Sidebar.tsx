@@ -13,7 +13,8 @@ import {
   Settings, 
   X,
   ShieldCheck, 
-  Clock 
+  Clock,
+  BookOpen
 } from 'lucide-react';
 import { AgingSummary, BusinessProfile } from '../types';
 
@@ -23,6 +24,7 @@ export type NavigationTab =
   | 'csv_import' 
   | 'actions' 
   | 'recovery_log' 
+  | 'research'
   | 'settings';
 
 interface SidebarProps {
@@ -48,6 +50,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'csv_import', label: 'Import CSV Data', icon: UploadCloud },
     { id: 'actions', label: 'Action Queue', icon: Zap, badge: summary.overdueInvoicesCount > 0 ? summary.overdueInvoicesCount : undefined },
     { id: 'recovery_log', label: 'Payment Records', icon: Receipt },
+    { id: 'research', label: 'Legal & Market Dossier', icon: BookOpen },
     { id: 'settings', label: 'Settings & Profile', icon: Settings },
   ];
 

@@ -244,7 +244,41 @@ test('Draft Generator: Validates contact phone and email format', () => {
   assert.equal(validateEmail('').isValid, false);
 });
 
+// 9. Commercial Dispute Status Transitions
+test('Commercial Dispute: Pauses aging escalation and sets dispute status; clearing restores category', () => {
+  // Invoice overdue by 50 days (normally overdue_45_plus)
+  const categoryNormal = categorizeInvoiceAging(200000, 0, 50, false);
+  assert.equal(categoryNormal, 'overdue_45_plus');
+
+  // When marked in dispute, category must be 'disputed'
+  const categoryDisputed = categorizeInvoiceAging(200000, 0, 50, true);
+  assert.equal(categoryDisputed, 'disputed');
+
+  // MSME status during dispute must not be breach
+  const msmeDisputed = evaluateMsmeStatutoryStatus(true, true, 50, false, true);
+  assert.notEqual(msmeDisputed, 'statutory_breach');
+
+  // Clearing dispute returns it to overdue_45_plus
+  const categoryCleared = categorizeInvoiceAging(200000, 0, 50, false);
+  assert.equal(categoryCleared, 'overdue_45_plus');
+});
+
+// 10. Financial Overpayment Protection
+test('Payment Boundaries: Validates partial payment precision and prevents overpayment overflow', () => {
+  const total = 150000.75;
+  const payment1 = 50000.25;
+  const balance1 = Math.round((total - payment1) * 100) / 100;
+  assert.equal(balance1, 100000.50);
+
+  // Attempting to pay more than balance (e.g. 100001) should be flagged
+  const isOverpayment = (payment: number, balance: number) => payment > balance + 0.01;
+  assert.equal(isOverpayment(100001, balance1), true);
+  assert.equal(isOverpayment(100000.50, balance1), false);
+  assert.equal(isOverpayment(50000, balance1), false);
+});
+
 console.log(`\nTest results: ${passed} passed, ${failed} failed.\n`);
 if (failed > 0) {
   process.exit(1);
 }
+

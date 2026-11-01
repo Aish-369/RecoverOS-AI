@@ -1,5 +1,9 @@
 /**
- * RecoverOS AI - Production SaaS Data & Domain Models
+ * ============================================================================
+ * RecoverOS AI - Production Data Models & Domain Types
+ * ============================================================================
+ * Strict types for invoices, deterministic aging, CSV validation, partial payments,
+ * dispute tracking, and multi-tenant isolation.
  */
 
 export type InvoiceAgingCategory = 
@@ -8,7 +12,7 @@ export type InvoiceAgingCategory =
   | 'overdue_31_44'      // 31 to 44 days past due (Section 43B(h) buffer window)
   | 'overdue_45_plus'    // 45+ days past due (Statutory threshold breach per MSMED Act)
   | 'paid'               // Paid in full (balance <= 0.009)
-  | 'disputed';          // Marked in commercial dispute
+  | 'disputed';          // Marked in commercial dispute (pauses standard collection)
 
 export type MsmeStatutoryStatus =
   | 'not_applicable'         // Supplier not MSME or invoice not eligible
@@ -25,8 +29,8 @@ export interface Invoice {
   customerPhone?: string;
   issueDate: string;        // YYYY-MM-DD
   dueDate: string;          // YYYY-MM-DD
-  totalAmount: number;      // Exact INR value
-  paidAmount: number;       // Exact INR received
+  totalAmount: number;      // Exact INR value (> 0)
+  paidAmount: number;       // Exact INR received (>= 0 and <= totalAmount)
   balanceAmount: number;    // totalAmount - paidAmount
   status: InvoiceAgingCategory;
   daysOverdue: number;      // Deterministic calendar days
@@ -34,6 +38,9 @@ export interface Invoice {
   msmeStatutoryStatus: MsmeStatutoryStatus;
   projectMilestone?: string;
   notes?: string;
+  disputeReason?: string;
+  followUpCount?: number;
+  lastFollowUpDate?: string;
   isDemoData?: boolean;
   createdAt: string;
   updatedAt?: string;
@@ -128,7 +135,17 @@ export interface AuditEvent {
   id: string;
   workspaceId: string;
   invoiceNumber: string;
-  eventType: 'draft_created' | 'draft_edited' | 'channel_opened' | 'payment_recorded' | 'invoice_created' | 'status_changed';
+  eventType: 
+    | 'draft_created' 
+    | 'draft_edited' 
+    | 'channel_opened' 
+    | 'payment_recorded' 
+    | 'invoice_created' 
+    | 'invoice_updated'
+    | 'invoice_deleted'
+    | 'dispute_marked'
+    | 'dispute_cleared'
+    | 'status_changed';
   description: string;
   timestamp: string;
 }

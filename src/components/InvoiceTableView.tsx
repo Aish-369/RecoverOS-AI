@@ -1,55 +1,102 @@
 /**
+ * ============================================================================
  * RecoverOS AI - Invoices & Accounts Receivable Management View
+ * ============================================================================
  * 
- * High-density tabular grid with:
- * - Search by invoice #, customer name, milestone
- * - Status filter tabs: All, Current, 1-30d, 31-44d, 45d+ Overdue, Paid, Disputed
- * - Sorting by Amount, Due Date, Days Overdue
- * - Single-click Draft follow-up & Record Payment triggers
+ * FILE PURPOSE:
+ * The primary operations cockpit for Indian B2B agencies and IT consultancies.
+ * Displays accounts receivable with:
+ * 1. Synchronized search across invoice #, customer name, and milestone deliverables.
+ * 2. Deterministic aging tabs: All, Current, All Overdue, 1-30d, 31-44d Cliff, 45d+ Breach, Paid, Disputed.
+ * 3. Sorting by Due Date, Balance/Total Amount, Days Overdue, and Customer Name.
+ * 4. Deep inspection: Open Invoice Detail modal with full payment remittance ledger history.
+ * 5. Edit, Dispute, Delete, Record Payment, and AI Follow-up Draft actions.
+ * 
+ * DESIGN PRINCIPLES (Strict Anti-Slop):
+ * - Clean unboxed text metadata with subtle typographic separators.
+ * - Interactive filter tabs with segmented button states.
+ * - WCAG AA accessible contrast, zero fake data, no dead clicks.
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
   Search, 
   ArrowUpDown, 
   Send, 
   CheckCircle2, 
-  AlertCircle, 
   FileSpreadsheet,
   Plus,
-  HelpCircle,
-  AlertTriangle
+  AlertTriangle,
+  Receipt,
+  Eye,
+  Edit3,
+  Trash2,
+  Calendar,
+  Clock,
+  ShieldAlert
 } from 'lucide-react';
-import { Invoice } from '../types';
+import { Invoice, PaymentRecord, BusinessProfile } from '../types';
 import { formatINR } from '../utils/agingEngine';
+import { InvoiceDetailModal } from './InvoiceDetailModal';
+import { EditInvoiceModal } from './EditInvoiceModal';
+import { DisputeModal } from './DisputeModal';
 
 interface InvoiceTableViewProps {
   invoices: Invoice[];
+  payments: PaymentRecord[];
+  profile: BusinessProfile;
   initialFilter?: string;
+  searchQuery?: string;
   onOpenDraft: (invoice: Invoice) => void;
   onOpenMarkPaid: (invoice: Invoice) => void;
   onOpenAddInvoice: () => void;
   onOpenCsvImport: () => void;
-  onToggleDispute: (invoice: Invoice) => void;
+  onSaveInvoice: (updatedInvoice: Invoice) => void;
+  onConfirmDispute: (invoice: Invoice, isDisputed: boolean, reason?: string) => void;
+  onDeleteInvoice: (invoice: Invoice) => void;
 }
 
-type SortField = 'dueDate' | 'totalAmount' | 'daysOverdue' | 'customerName';
+type SortField = 'dueDate' | 'totalAmount' | 'balanceAmount' | 'daysOverdue' | 'customerName';
 type SortDirection = 'asc' | 'desc';
 
 export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
   invoices,
+  payments,
+  profile,
   initialFilter = 'all',
+  searchQuery = '',
   onOpenDraft,
   onOpenMarkPaid,
   onOpenAddInvoice,
   onOpenCsvImport,
-  onToggleDispute,
+  onSaveInvoice,
+  onConfirmDispute,
+  onDeleteInvoice,
 }) => {
   const [filter, setFilter] = useState<string>(initialFilter);
-  const [search, setSearch] = useState<string>('');
+  const [search, setSearch] = useState<string>(searchQuery);
   const [sortField, setSortField] = useState<SortField>('daysOverdue');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
+  // Active Modals for Row Actions
+  const [detailInvoice, setDetailInvoice] = useState<Invoice | null>(null);
+  const [editInvoice, setEditInvoice] = useState<Invoice | null>(null);
+  const [disputeInvoice, setDisputeInvoice] = useState<Invoice | null>(null);
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<Invoice | null>(null);
+
+  // Synchronize filter when navigating from external metric cards (e.g. Dashboard)
+  useEffect(() => {
+    if (initialFilter) {
+      setFilter(initialFilter);
+    }
+  }, [initialFilter]);
+
+  // Synchronize search if parent top navbar search query changes
+  useEffect(() => {
+    setSearch(searchQuery);
+  }, [searchQuery]);
+
+  // Filter calculations
   const filteredInvoices = useMemo(() => {
     return invoices.filter((inv) => {
       if (filter === 'current' && inv.status !== 'current') return false;
@@ -61,17 +108,19 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
       if (filter === 'disputed' && inv.status !== 'disputed') return false;
 
       if (search.trim()) {
-        const query = search.toLowerCase();
+        const query = search.toLowerCase().trim();
         const matchesName = inv.customerName.toLowerCase().includes(query);
         const matchesNum = inv.invoiceNumber.toLowerCase().includes(query);
         const matchesMilestone = (inv.projectMilestone || '').toLowerCase().includes(query);
-        if (!matchesName && !matchesNum && !matchesMilestone) return false;
+        const matchesNotes = (inv.notes || '').toLowerCase().includes(query);
+        if (!matchesName && !matchesNum && !matchesMilestone && !matchesNotes) return false;
       }
 
       return true;
     });
   }, [invoices, filter, search]);
 
+  // Sort calculation
   const sortedInvoices = useMemo(() => {
     return [...filteredInvoices].sort((a, b) => {
       let valA: string | number = a[sortField];
@@ -101,6 +150,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
     return {
       all: invoices.length,
       current: invoices.filter((i) => i.status === 'current').length,
+      overdue: invoices.filter((i) => i.daysOverdue > 0 && i.status !== 'paid').length,
       overdue_0_30: invoices.filter((i) => i.status === 'overdue_0_30').length,
       overdue_31_44: invoices.filter((i) => i.status === 'overdue_31_44').length,
       overdue_45_plus: invoices.filter((i) => i.status === 'overdue_45_plus').length,
@@ -108,6 +158,10 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
       disputed: invoices.filter((i) => i.status === 'disputed').length,
     };
   }, [invoices]);
+
+  const handleDeleteWithConfirmation = (inv: Invoice) => {
+    setDeleteConfirmTarget(inv);
+  };
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-12">
@@ -118,14 +172,14 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
             Invoices & Accounts Receivable
           </h1>
           <p className="text-xs text-slate-500 mt-0.5">
-            Monitor aging buckets, record partial and full payments, and dispatch follow-ups.
+            Real-time aging categories, Section 43B(h) statutory tracking, and payment ledger history.
           </p>
         </div>
 
         <div className="flex items-center gap-2.5">
           <button
             onClick={onOpenCsvImport}
-            className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5"
+            className="px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition-colors flex items-center gap-1.5 shadow-2xs"
           >
             <FileSpreadsheet className="w-3.5 h-3.5 text-slate-500" />
             <span>Import CSV</span>
@@ -145,15 +199,23 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
         <div className="flex items-center gap-1 overflow-x-auto w-full md:w-auto p-0.5 bg-slate-100 rounded-lg shrink-0">
           <button
             onClick={() => setFilter('all')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'all' ? 'bg-white text-slate-900 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             All ({counts.all})
           </button>
           <button
+            onClick={() => setFilter('overdue')}
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+              filter === 'overdue' ? 'bg-white text-rose-700 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            Overdue ({counts.overdue})
+          </button>
+          <button
             onClick={() => setFilter('current')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'current' ? 'bg-white text-emerald-800 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -161,7 +223,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           </button>
           <button
             onClick={() => setFilter('overdue_0_30')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'overdue_0_30' ? 'bg-white text-indigo-700 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -169,7 +231,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           </button>
           <button
             onClick={() => setFilter('overdue_31_44')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'overdue_31_44' ? 'bg-white text-amber-900 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -177,7 +239,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           </button>
           <button
             onClick={() => setFilter('overdue_45_plus')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'overdue_45_plus' ? 'bg-white text-rose-700 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -185,7 +247,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           </button>
           <button
             onClick={() => setFilter('paid')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+            className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
               filter === 'paid' ? 'bg-white text-emerald-700 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -194,7 +256,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           {counts.disputed > 0 && (
             <button
               onClick={() => setFilter('disputed')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
+              className={`px-2.5 py-1.5 text-xs font-medium rounded-md transition-colors whitespace-nowrap ${
                 filter === 'disputed' ? 'bg-white text-rose-800 shadow-2xs font-semibold' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
@@ -209,7 +271,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search invoice or client..."
+            placeholder="Search invoice, client, milestone..."
             className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           />
         </div>
@@ -245,20 +307,20 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                   className="py-3 px-4 cursor-pointer hover:text-slate-800"
                 >
                   <div className="flex items-center gap-1.5">
-                    <span>Days Overdue</span>
+                    <span>Aging Status</span>
                     <ArrowUpDown className="w-3 h-3 text-slate-400" />
                   </div>
                 </th>
                 <th 
-                  onClick={() => handleSort('totalAmount')}
+                  onClick={() => handleSort('balanceAmount')}
                   className="py-3 px-4 text-right cursor-pointer hover:text-slate-800"
                 >
                   <div className="flex items-center justify-end gap-1.5">
-                    <span>Balance / Total</span>
+                    <span>Remaining Balance</span>
                     <ArrowUpDown className="w-3 h-3 text-slate-400" />
                   </div>
                 </th>
-                <th className="py-3 px-4">Compliance Status</th>
+                <th className="py-3 px-4">Statutory 43B(h)</th>
                 <th className="py-3 px-4 text-right">Actions</th>
               </tr>
             </thead>
@@ -279,8 +341,12 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                       key={inv.id}
                       className="hover:bg-slate-50/70 transition-colors group"
                     >
-                      <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-900 text-xs">
+                      {/* Customer Name & Milestone */}
+                      <td 
+                        onClick={() => setDetailInvoice(inv)}
+                        className="py-3.5 px-4 cursor-pointer"
+                      >
+                        <div className="font-bold text-slate-900 text-xs hover:text-indigo-600 transition-colors">
                           {inv.customerName}
                         </div>
                         <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
@@ -288,14 +354,20 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-4 font-mono text-slate-700 font-medium tabular-nums">
+                      {/* Invoice Number */}
+                      <td 
+                        onClick={() => setDetailInvoice(inv)}
+                        className="py-3.5 px-4 font-mono text-slate-700 font-medium tabular-nums cursor-pointer"
+                      >
                         {inv.invoiceNumber}
                       </td>
 
+                      {/* Due Date */}
                       <td className="py-3.5 px-4 tabular-nums text-slate-600">
                         {inv.dueDate}
                       </td>
 
+                      {/* Days Overdue / Aging Bucket */}
                       <td className="py-3.5 px-4">
                         {inv.status === 'paid' ? (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold bg-emerald-50 text-emerald-700">
@@ -320,12 +392,13 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                             +{inv.daysOverdue} days
                           </span>
                         ) : (
-                          <span className="text-emerald-700 font-medium tabular-nums">
+                          <span className="text-emerald-700 font-medium tabular-nums text-[11px]">
                             Due in {Math.abs(inv.daysOverdue)}d
                           </span>
                         )}
                       </td>
 
+                      {/* Balance & Total Invoiced */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="font-bold text-slate-900 font-mono tabular-nums text-xs">
                           {formatINR(inv.balanceAmount)}
@@ -335,13 +408,19 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                             Paid: {formatINR(inv.paidAmount)} · Total: {formatINR(inv.totalAmount)}
                           </div>
                         )}
+                        {inv.paidAmount === 0 && (
+                          <div className="text-[10px] text-slate-400 tabular-nums">
+                            Total: {formatINR(inv.totalAmount)}
+                          </div>
+                        )}
                       </td>
 
+                      {/* Section 43B(h) Statutory Status */}
                       <td className="py-3.5 px-4">
                         {inv.status === 'paid' ? (
                           <span className="text-slate-400 text-[11px]">—</span>
                         ) : inv.status === 'disputed' ? (
-                          <span className="text-[10px] text-rose-600">Dispute On Hold</span>
+                          <span className="text-[10px] text-rose-600 font-medium">Dispute Paused</span>
                         ) : inv.msmeStatutoryStatus === 'approaching_deadline' ? (
                           <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded" title="Approaching 45d limit: Buyer tax deduction at risk">
                             43B(h) Cliff ({45 - inv.daysOverdue}d left)
@@ -355,6 +434,7 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                         )}
                       </td>
 
+                      {/* Row Actions */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
                           {inv.status !== 'paid' && (
@@ -375,11 +455,32 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
                             </>
                           )}
                           <button
-                            onClick={() => onToggleDispute(inv)}
-                            className="p-1 text-slate-400 hover:text-slate-700 rounded text-[10px]"
-                            title={inv.status === 'disputed' ? 'Clear Dispute' : 'Mark in Dispute'}
+                            onClick={() => setDetailInvoice(inv)}
+                            className="p-1 text-slate-400 hover:text-slate-700 rounded transition-colors"
+                            title="Inspect Invoice Ledger"
                           >
-                            {inv.status === 'disputed' ? 'Unmark Dispute' : 'Dispute'}
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setEditInvoice(inv)}
+                            className="p-1 text-slate-400 hover:text-slate-700 rounded transition-colors"
+                            title="Edit Invoice"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setDisputeInvoice(inv)}
+                            className="p-1 text-slate-400 hover:text-amber-700 rounded transition-colors"
+                            title={inv.status === 'disputed' ? 'Resolve Dispute' : 'Record Dispute'}
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteWithConfirmation(inv)}
+                            className="p-1 text-slate-400 hover:text-rose-600 rounded transition-colors"
+                            title="Delete Invoice"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
                       </td>
@@ -391,6 +492,96 @@ export const InvoiceTableView: React.FC<InvoiceTableViewProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Invoice Detail & Payment Remittance Ledger Modal */}
+      {detailInvoice && (
+        <InvoiceDetailModal
+          invoice={detailInvoice}
+          profile={profile}
+          payments={payments}
+          onClose={() => setDetailInvoice(null)}
+          onOpenDraft={(inv) => {
+            setDetailInvoice(null);
+            onOpenDraft(inv);
+          }}
+          onOpenMarkPaid={(inv) => {
+            setDetailInvoice(null);
+            onOpenMarkPaid(inv);
+          }}
+          onOpenEdit={(inv) => {
+            setDetailInvoice(null);
+            setEditInvoice(inv);
+          }}
+          onOpenDispute={(inv) => {
+            setDetailInvoice(null);
+            setDisputeInvoice(inv);
+          }}
+          onDeleteInvoice={handleDeleteWithConfirmation}
+        />
+      )}
+
+      {/* Edit Invoice Modal */}
+      {editInvoice && (
+        <EditInvoiceModal
+          invoice={editInvoice}
+          profile={profile}
+          onClose={() => setEditInvoice(null)}
+          onSaveInvoice={(updated) => {
+            onSaveInvoice(updated);
+            setEditInvoice(null);
+          }}
+        />
+      )}
+
+      {/* Dispute Modal */}
+      {disputeInvoice && (
+        <DisputeModal
+          invoice={disputeInvoice}
+          onClose={() => setDisputeInvoice(null)}
+          onConfirmDispute={(inv, isDisputed, reason) => {
+            onConfirmDispute(inv, isDisputed, reason);
+            setDisputeInvoice(null);
+          }}
+        />
+      )}
+      {/* Delete Confirmation Modal */}
+      {deleteConfirmTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-2xs">
+          <div className="bg-white rounded-2xl max-w-sm w-full border border-slate-200 shadow-xl overflow-hidden p-6 space-y-4">
+            <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center mx-auto">
+              <Trash2 className="w-5 h-5" />
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-sm font-bold text-slate-900">
+                Delete Invoice #{deleteConfirmTarget.invoiceNumber}?
+              </h3>
+              <p className="text-xs text-slate-500">
+                Are you sure you want to remove this record for {deleteConfirmTarget.customerName}? This will remove it from receivables.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmTarget(null)}
+                className="w-full py-2 text-xs font-semibold text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteInvoice(deleteConfirmTarget);
+                  if (detailInvoice?.id === deleteConfirmTarget.id) setDetailInvoice(null);
+                  setDeleteConfirmTarget(null);
+                }}
+                className="w-full py-2 text-xs font-semibold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-xs transition-colors"
+              >
+                Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

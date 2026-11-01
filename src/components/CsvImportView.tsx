@@ -56,6 +56,7 @@ export const CsvImportView: React.FC<CsvImportViewProps> = ({
   });
   const [validationResults, setValidationResults] = useState<CsvRowValidation[]>([]);
   const [replaceExisting, setReplaceExisting] = useState<boolean>(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const existingInvoiceSet = useMemo(() => {
@@ -90,9 +91,10 @@ export const CsvImportView: React.FC<CsvImportViewProps> = ({
     const rows = parseCSVText(text);
 
     if (rows.length < 2) {
-      alert('The provided CSV file contains no data rows or is malformed.');
+      setErrorMessage('The provided CSV file contains no data rows or is malformed.');
       return;
     }
+    setErrorMessage(null);
 
     const headerRow = rows[0];
     setParsedRows(rows);
@@ -146,7 +148,7 @@ export const CsvImportView: React.FC<CsvImportViewProps> = ({
       .map((r) => r.parsed as Invoice);
 
     if (validInvoices.length === 0) {
-      alert('No valid invoices found to import. Please resolve the row errors before importing.');
+      setErrorMessage('No valid invoices found to import. Please resolve the row errors before importing.');
       return;
     }
 

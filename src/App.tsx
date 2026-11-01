@@ -1,6 +1,22 @@
 /**
- * RecoverOS AI - Production SaaS Application
- * Revenue Recovery Copilot for Indian B2B SMBs & Digital Agencies
+ * ============================================================================
+ * RecoverOS AI - Production SaaS Application Root
+ * ============================================================================
+ * 
+ * FILE PURPOSE:
+ * Top-level application orchestrator for RecoverOS AI.
+ * Coordinates:
+ * - Multi-tenant workspace data state (invoices, payments, profile, audit trail).
+ * - Synchronization across the REST backend (`/api/*`) and local browser storage.
+ * - Navigation routing between Dashboard, Invoices Table, CSV Ingestion,
+ *   Action Queue, Payment Receipts, and Settings.
+ * - Modals for follow-up drafting, partial/full payment reconciliation, manual invoice entry,
+ *   dispute tracking, and statutory compliance assistance.
+ * 
+ * DESIGN INTEGRITY:
+ * - Zero fake data: production begins in a clean zero-state unless test fixtures are seeded.
+ * - Human-in-the-loop: Follow-up messages require user confirmation before opening WhatsApp or email.
+ * - Deterministic financial math: All metrics are derived from underlying invoice and payment records.
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
@@ -12,6 +28,7 @@ import { CsvImportView } from './components/CsvImportView';
 import { ActionQueueView } from './components/ActionQueueView';
 import { RecoveryLogView } from './components/RecoveryLogView';
 import { SettingsView } from './components/SettingsView';
+import { ResearchView } from './components/ResearchView';
 import { DraftModal } from './components/DraftModal';
 import { MarkPaidModal } from './components/MarkPaidModal';
 import { AddInvoiceModal } from './components/AddInvoiceModal';
@@ -25,6 +42,7 @@ import {
   AuditEvent 
 } from './types';
 import { storage } from './services/storageService';
+import { api } from './services/apiService';
 import { 
   computeAgingSummary, 
   generatePrioritizedActions,
@@ -35,14 +53,13 @@ import {
 } from './utils/agingEngine';
 
 export default function App() {
-  // Initialize from persistent storage service
   const [initialLoaded, setInitialLoaded] = useState<boolean>(false);
   const [profile, setProfile] = useState<BusinessProfile>(() => storage.loadState().profile);
   const [invoices, setInvoices] = useState<Invoice[]>(() => storage.loadState().invoices);
   const [payments, setPayments] = useState<PaymentRecord[]>(() => storage.loadState().payments);
   const [auditLogs, setAuditLogs] = useState<AuditEvent[]>(() => storage.loadState().auditLogs);
 
-  // View & Filter States
+  // Navigation & Filtering States
   const [currentTab, setCurrentTab] = useState<NavigationTab>('dashboard');
   const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -60,6 +77,21 @@ export default function App() {
     setNotification(msg);
     setTimeout(() => setNotification(null), 3500);
   };
+
+  // Hydrate from backend API if available, else use storage
+  useEffect(() => {
+    async function hydrate() {
+      const state = await api.loadWorkspace(storage.getWorkspaceId());
+      if (state) {
+        setProfile(state.profile);
+        setInvoices(state.invoices);
+        setPayments(state.payments);
+        setAuditLogs(state.auditLogs);
+      }
+      setInitialLoaded(true);
+    }
+    hydrate();
+  }, []);
 
   // Synchronize state with persistent storage on updates
   useEffect(() => {
@@ -80,11 +112,7 @@ export default function App() {
     }
   }, [profile, initialLoaded]);
 
-  useEffect(() => {
-    setInitialLoaded(true);
-  }, []);
-
-  // Compute deterministic summary with selected period and prioritized actions
+  // Compute deterministic summary and prioritized actions
   const summary = useMemo(() => computeAgingSummary(invoices, payments, period), [invoices, payments, period]);
   const prioritizedActions = useMemo(() => generatePrioritizedActions(invoices), [invoices]);
 
@@ -107,7 +135,8 @@ export default function App() {
     }
 
     setInvoices(updatedInvoices);
-    storage.recordAudit('invoice_created', `Imported ${importedInvoices.length} invoices via CSV`);
+    api.bulkImportInvoices(storage.getWorkspaceId(), importedInvoices, replaceExisting);
+    storage.recordAudit('invoice_created', `Imported ${importedInvoices.length} invoices via CSV engine`);
     setCurrentTab('invoices');
     setInvoiceFilter('all');
     showNotification(`Successfully ingested ${importedInvoices.length} invoices into active workspace.`);
@@ -143,6 +172,7 @@ export default function App() {
     );
 
     setPayments((prev) => [record, ...prev]);
+    api.recordPayment(storage.getWorkspaceId(), record, paymentAmount);
     storage.recordAudit(
       'payment_recorded',
       `Recorded payment of ₹${paymentAmount.toLocaleString('en-IN')} (Ref: ${record.referenceNumber})`,
@@ -152,27 +182,26 @@ export default function App() {
     showNotification(`Payment recorded for ${record.customerName} (${record.invoiceNumber})`);
   };
 
-  // Action Dispatched Handler (with optional contact info update)
+  // Action Dispatched Handler (with contact update and follow-up tracking)
   const handleRecordActionDispatched = (
     invoice: Invoice, 
     channel: 'whatsapp' | 'email',
     updatedContact?: { phone?: string; email?: string }
   ) => {
-    // If user provided missing contact info in modal, save to invoice
-    if (updatedContact?.phone || updatedContact?.email) {
-      setInvoices((prev) =>
-        prev.map((inv) => {
-          if (inv.id === invoice.id) {
-            return {
-              ...inv,
-              customerPhone: updatedContact.phone || inv.customerPhone,
-              customerEmail: updatedContact.email || inv.customerEmail,
-            };
-          }
-          return inv;
-        })
-      );
-    }
+    setInvoices((prev) =>
+      prev.map((inv) => {
+        if (inv.id === invoice.id) {
+          return {
+            ...inv,
+            customerPhone: updatedContact?.phone || inv.customerPhone,
+            customerEmail: updatedContact?.email || inv.customerEmail,
+            followUpCount: (inv.followUpCount || 0) + 1,
+            lastFollowUpDate: new Date().toISOString().split('T')[0],
+          };
+        }
+        return inv;
+      })
+    );
 
     storage.recordAudit(
       'channel_opened',
@@ -183,36 +212,68 @@ export default function App() {
     setDraftTarget(null);
   };
 
-  // Toggle Commercial Dispute
-  const handleToggleDispute = (invoice: Invoice) => {
+  // Update Invoice Details (Milestone, Due Date, Contacts, Notes)
+  const handleSaveInvoice = (updated: Invoice) => {
+    setInvoices((prev) => prev.map((inv) => (inv.id === updated.id ? updated : inv)));
+    api.updateInvoice(storage.getWorkspaceId(), updated);
+    storage.recordAudit('invoice_updated', `Updated invoice #${updated.invoiceNumber}`, updated.invoiceNumber);
+    showNotification(`Invoice #${updated.invoiceNumber} updated.`);
+  };
+
+  // Dispute Management (Apply or Clear)
+  const handleConfirmDispute = (invoice: Invoice, isDisputed: boolean, reason?: string) => {
     setInvoices((prev) =>
       prev.map((inv) => {
         if (inv.id === invoice.id) {
-          const isCurrentlyDisputed = inv.status === 'disputed';
-          const newStatus = isCurrentlyDisputed 
-            ? categorizeInvoiceAging(inv.totalAmount, inv.paidAmount, inv.daysOverdue, false)
-            : 'disputed';
-          return { ...inv, status: newStatus };
+          const daysOverdue = calculateDaysOverdue(inv.dueDate);
+          const newStatus = isDisputed 
+            ? 'disputed' 
+            : categorizeInvoiceAging(inv.totalAmount, inv.paidAmount, daysOverdue, false);
+          const newMsmeStatus = evaluateMsmeStatutoryStatus(
+            profile.isMsmeRegistered,
+            inv.isMsmeEligible,
+            daysOverdue,
+            newStatus === 'paid',
+            isDisputed
+          );
+          return {
+            ...inv,
+            status: newStatus,
+            msmeStatutoryStatus: newMsmeStatus,
+            disputeReason: isDisputed ? reason : undefined,
+          };
         }
         return inv;
       })
     );
 
-    const actionText = invoice.status === 'disputed' ? 'Cleared dispute status' : 'Marked in commercial dispute';
-    storage.recordAudit('status_changed', `${actionText} for invoice ${invoice.invoiceNumber}`, invoice.invoiceNumber);
-    showNotification(`${actionText} for ${invoice.invoiceNumber}`);
+    const auditType = isDisputed ? 'dispute_marked' : 'dispute_cleared';
+    const desc = isDisputed 
+      ? `Marked invoice #${invoice.invoiceNumber} in commercial dispute: ${reason}`
+      : `Cleared commercial dispute on invoice #${invoice.invoiceNumber}`;
+    storage.recordAudit(auditType, desc, invoice.invoiceNumber);
+    showNotification(desc);
   };
 
-  // Add Individual Invoice
+  // Delete Invoice
+  const handleDeleteInvoice = (invoice: Invoice) => {
+    setInvoices((prev) => prev.filter((i) => i.id !== invoice.id));
+    api.deleteInvoice(storage.getWorkspaceId(), invoice.id);
+    storage.recordAudit('invoice_deleted', `Deleted invoice #${invoice.invoiceNumber}`, invoice.invoiceNumber);
+    showNotification(`Invoice #${invoice.invoiceNumber} deleted.`);
+  };
+
+  // Add Single Invoice
   const handleAddInvoice = (newInv: Invoice) => {
     const exists = invoices.some((i) => i.invoiceNumber.toUpperCase() === newInv.invoiceNumber.toUpperCase());
     if (exists) {
-      alert(`Invoice #${newInv.invoiceNumber} already exists in your workspace.`);
+      showNotification(`Invoice #${newInv.invoiceNumber} already exists in your workspace.`);
       return;
     }
 
     setInvoices((prev) => [newInv, ...prev]);
-    storage.recordAudit('invoice_created', `Created invoice ${newInv.invoiceNumber}`, newInv.invoiceNumber);
+    api.createInvoice(storage.getWorkspaceId(), newInv);
+    storage.recordAudit('invoice_created', `Created invoice #${newInv.invoiceNumber}`, newInv.invoiceNumber);
     setIsAddInvoiceOpen(false);
     showNotification(`Invoice ${newInv.invoiceNumber} added successfully.`);
   };
@@ -220,44 +281,44 @@ export default function App() {
   // Save Profile
   const handleSaveProfile = (updated: BusinessProfile) => {
     setProfile(updated);
-    storage.saveProfile(updated);
+    api.saveProfile(storage.getWorkspaceId(), updated);
 
-    // Recompute MSME status on existing invoices
+    // Recompute MSME statutory status across open invoices
     setInvoices((prev) =>
       prev.map((inv) => ({
         ...inv,
         isMsmeEligible: updated.isMsmeRegistered,
         msmeStatutoryStatus: evaluateMsmeStatutoryStatus(
           updated.isMsmeRegistered,
-          inv.isMsmeEligible,
+          updated.isMsmeRegistered,
           inv.daysOverdue,
           inv.status === 'paid',
           inv.status === 'disputed'
         ),
       }))
     );
-    showNotification('Workspace profile and compliance rules updated.');
+    showNotification('Workspace profile and compliance settings updated.');
   };
 
-  // Explicit Demo Seeding (For testing)
+  // Seed Demo Data for Testing
   const handleSeedDemoData = () => {
     const seeded = storage.seedDemoDataset();
     setProfile(seeded.profile);
     setInvoices(seeded.invoices);
     setPayments(seeded.payments);
     setAuditLogs(seeded.auditLogs);
+    api.bulkImportInvoices(storage.getWorkspaceId(), seeded.invoices, true);
+    api.saveProfile(storage.getWorkspaceId(), seeded.profile);
     showNotification('Loaded sample digital agency test fixtures (Studio Artix Pvt Ltd).');
   };
 
   // Clear All Workspace Data
   const handleClearAllData = () => {
-    if (window.confirm('Clear all data in this workspace? This cannot be undone.')) {
-      storage.clearWorkspace();
-      setInvoices([]);
-      setPayments([]);
-      setAuditLogs([]);
-      showNotification('Workspace reset to empty state.');
-    }
+    api.resetWorkspace(storage.getWorkspaceId());
+    setInvoices([]);
+    setPayments([]);
+    setAuditLogs([]);
+    showNotification('Workspace reset to clean zero-state.');
   };
 
   const activeViewTitleMap: Record<NavigationTab, string> = {
@@ -266,6 +327,7 @@ export default function App() {
     csv_import: 'CSV Ingestion Engine',
     actions: 'Action Queue',
     recovery_log: 'Payment Records',
+    research: 'Legal & Market Dossier',
     settings: 'Settings & Profile',
   };
 
@@ -284,7 +346,12 @@ export default function App() {
         profile={profile}
         activeViewTitle={activeViewTitleMap[currentTab]}
         searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
+        onSearchChange={(q) => {
+          setSearchQuery(q);
+          if (currentTab !== 'invoices' && q.trim()) {
+            setCurrentTab('invoices');
+          }
+        }}
         onOpenAddInvoice={() => setIsAddInvoiceOpen(true)}
         onOpenCsvImport={() => setCurrentTab('csv_import')}
         onOpenHelp={() => setIsHelpOpen(true)}
@@ -325,12 +392,17 @@ export default function App() {
           {currentTab === 'invoices' && (
             <InvoiceTableView
               invoices={invoices}
+              payments={payments}
+              profile={profile}
               initialFilter={invoiceFilter}
+              searchQuery={searchQuery}
               onOpenDraft={(inv) => setDraftTarget({ invoice: inv })}
               onOpenMarkPaid={(inv) => setMarkPaidTarget(inv)}
               onOpenAddInvoice={() => setIsAddInvoiceOpen(true)}
               onOpenCsvImport={() => setCurrentTab('csv_import')}
-              onToggleDispute={handleToggleDispute}
+              onSaveInvoice={handleSaveInvoice}
+              onConfirmDispute={handleConfirmDispute}
+              onDeleteInvoice={handleDeleteInvoice}
             />
           )}
 
@@ -359,6 +431,10 @@ export default function App() {
             />
           )}
 
+          {currentTab === 'research' && (
+            <ResearchView />
+          )}
+
           {currentTab === 'settings' && (
             <SettingsView
               profile={profile}
@@ -371,7 +447,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* Modals */}
+      {/* Global Modals */}
       {draftTarget && (
         <DraftModal
           invoice={draftTarget.invoice}

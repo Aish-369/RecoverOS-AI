@@ -24,7 +24,7 @@ export const AddInvoiceModal: React.FC<AddInvoiceModalProps> = ({
   );
   const [customerName, setCustomerName] = useState<string>('');
   const [customerEmail, setCustomerEmail] = useState<string>('');
-  const [customerPhone, setCustomerPhone] = useState<string>('+91 ');
+  const [customerPhone, setCustomerPhone] = useState<string>('');
   const [issueDate, setIssueDate] = useState<string>(
     new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0]
   );
@@ -34,11 +34,12 @@ export const AddInvoiceModal: React.FC<AddInvoiceModalProps> = ({
   const [totalAmount, setTotalAmount] = useState<number>(150000);
   const [milestone, setMilestone] = useState<string>('UX Design & Tech Retainer');
   const [notes, setNotes] = useState<string>('');
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!customerName.trim() || totalAmount <= 0 || !dueDate) {
-      alert('Please fill all mandatory fields with valid values.');
+      setError('Please fill all mandatory fields with valid values.');
       return;
     }
 
@@ -51,8 +52,8 @@ export const AddInvoiceModal: React.FC<AddInvoiceModalProps> = ({
       workspaceId: profile.workspaceId,
       invoiceNumber: invoiceNumber.trim(),
       customerName: customerName.trim(),
-      customerEmail: customerEmail.trim() || 'billing@clientdomain.com',
-      customerPhone: customerPhone.trim() || '+91 98765 43210',
+      customerEmail: customerEmail.trim() || undefined,
+      customerPhone: customerPhone.trim() || undefined,
       issueDate,
       dueDate,
       totalAmount,
@@ -90,6 +91,12 @@ export const AddInvoiceModal: React.FC<AddInvoiceModalProps> = ({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {error && (
+          <div className="mx-6 mt-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-xs font-medium">
+            {error}
+          </div>
+        )}
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div className="grid grid-cols-2 gap-3">

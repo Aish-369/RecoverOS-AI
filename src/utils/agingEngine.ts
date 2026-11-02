@@ -125,20 +125,35 @@ export function getTodayDateOnly(): Date {
 }
 
 /**
- * Calculates the exact integer number of calendar days between today and the due date.
+ * Calculates the exact integer number of calendar days between today (or a reference date) and the due date.
  * 
  * FORMULA: (ReferenceDate - DueDate) in milliseconds / (1000 * 60 * 60 * 24)
  * 
  * RESULTS:
- * - Positive integer (e.g., +15): Overdue by 15 days.
- * - Zero (0): Due today.
- * - Negative integer (e.g., -5): Due in 5 days in the future (not overdue).
+ * - Positive integer (e.g., +15): Overdue by 15 calendar days.
+ * - Zero (0): Due today (0 days overdue, classified as 'current').
+ * - Negative integer (e.g., -5): Due in 5 days in the future (not overdue, classified as 'current').
+ * 
+ * DEFENSIVE NORMALIZATION:
+ * If an external caller passes a Date with non-zero hours/minutes (such as `new Date()`),
+ * we normalize it to calendar midnight UTC so that intra-day time (e.g., afternoon 2:00 PM)
+ * does not cause sub-day rounding drift.
  */
 export function calculateDaysOverdue(dueDateStr: string, referenceDate: Date = getTodayDateOnly()): number {
   const dueDate = parseStrictDateOnly(dueDateStr);
   if (!dueDate) return 0;
 
-  const diffMs = referenceDate.getTime() - dueDate.getTime();
+  // Ensure referenceDate is normalized to calendar midnight UTC
+  const normalizedRef = (
+    referenceDate.getUTCHours() === 0 &&
+    referenceDate.getUTCMinutes() === 0 &&
+    referenceDate.getUTCSeconds() === 0 &&
+    referenceDate.getUTCMilliseconds() === 0
+  )
+    ? referenceDate
+    : new Date(Date.UTC(referenceDate.getFullYear(), referenceDate.getMonth(), referenceDate.getDate()));
+
+  const diffMs = normalizedRef.getTime() - dueDate.getTime();
   const MS_PER_DAY = 1000 * 60 * 60 * 24;
   return Math.round(diffMs / MS_PER_DAY);
 }

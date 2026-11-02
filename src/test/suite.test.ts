@@ -277,6 +277,199 @@ test('Payment Boundaries: Validates partial payment precision and prevents overp
   assert.equal(isOverpayment(50000, balance1), false);
 });
 
+// 11. Leap Year Edge Cases & Day Span Calculations
+test('Leap Year Edge Cases: Validates leap day dates and day spans across Feb 28/29/March 1', () => {
+  // Case 1: Valid leap days in leap years
+  const leap2024 = parseStrictDateOnly('2024-02-29');
+  assert.notEqual(leap2024, null);
+  assert.equal(leap2024!.getUTCFullYear(), 2024);
+  assert.equal(leap2024!.getUTCMonth(), 1); // Feb is index 1
+  assert.equal(leap2024!.getUTCDate(), 29);
+
+  // British/Indian format for leap day
+  const leap2024Ind = parseStrictDateOnly('29/02/2024');
+  assert.notEqual(leap2024Ind, null);
+  assert.equal(leap2024Ind!.getUTCDate(), 29);
+
+  // Century leap year (2000 is divisible by 400)
+  const leap2000 = parseStrictDateOnly('2000-02-29');
+  assert.notEqual(leap2000, null);
+  assert.equal(leap2000!.getUTCDate(), 29);
+
+  // Case 2: Invalid leap days in non-leap years (must return null, never roll over to March 1)
+  assert.equal(parseStrictDateOnly('2025-02-29'), null);
+  assert.equal(parseStrictDateOnly('29/02/2025'), null);
+  assert.equal(parseStrictDateOnly('2023-02-29'), null);
+  assert.equal(parseStrictDateOnly('29/02/2023'), null);
+
+  // Case 3: Days overdue span across February 29 in leap year 2024
+  // Due: Feb 28, 2024. Reference: March 1, 2024.
+  // Because 2024 has Feb 29, exactly 2 calendar days have elapsed (Feb 29 and March 1).
+  const refMarch1Leap = new Date(Date.UTC(2024, 2, 1)); // March 1, 2024
+  assert.equal(calculateDaysOverdue('2024-02-28', refMarch1Leap), 2);
+
+  // Case 4: Days overdue span across February in non-leap year 2025
+  // Due: Feb 28, 2025. Reference: March 1, 2025.
+  // Because 2025 has NO Feb 29, exactly 1 calendar day has elapsed.
+  const refMarch1NonLeap = new Date(Date.UTC(2025, 2, 1)); // March 1, 2025
+  assert.equal(calculateDaysOverdue('2025-02-28', refMarch1NonLeap), 1);
+
+  // Case 5: Invoice due ON the leap day itself (Feb 29, 2024)
+  const dueLeapDay = '2024-02-29';
+  // Evaluated on the same day -> 0 days overdue
+  assert.equal(calculateDaysOverdue(dueLeapDay, new Date(Date.UTC(2024, 1, 29))), 0);
+  assert.equal(categorizeInvoiceAging(50000, 0, 0), 'current');
+
+  // Evaluated the day before (Feb 28, 2024) -> -1 day (future due)
+  assert.equal(calculateDaysOverdue(dueLeapDay, new Date(Date.UTC(2024, 1, 28))), -1);
+  assert.equal(categorizeInvoiceAging(50000, 0, -1), 'current');
+
+  // Evaluated on March 1, 2024 -> 1 day overdue
+  assert.equal(calculateDaysOverdue(dueLeapDay, new Date(Date.UTC(2024, 2, 1))), 1);
+  assert.equal(categorizeInvoiceAging(50000, 0, 1), 'overdue_0_30');
+
+  // Case 6: Spanning across leap day into future
+  // Reference: Feb 27, 2024. Due: March 2, 2024.
+  // Calendar days between Feb 27 and March 2 in a leap year: Feb 28, Feb 29, March 1, March 2 = 4 days until due (-4)
+  assert.equal(calculateDaysOverdue('2024-03-02', new Date(Date.UTC(2024, 1, 27))), -4);
+});
+
+// 12. Exact 45-Day MSME Statutory Boundary Thresholds
+test('MSME Statutory Boundaries: Exhaustive verification of days 0, 1, 30, 31, 44, 45, 46, and 90', () => {
+  const isMsme = true;
+  const isEligible = true;
+  const unpaid = false;
+  const amount = 75000;
+
+  // Day 0: Due today
+  assert.equal(categorizeInvoiceAging(amount, 0, 0), 'current');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 0, unpaid), 'within_statutory_limit');
+
+  // Day 1: 1 day overdue
+  assert.equal(categorizeInvoiceAging(amount, 0, 1), 'overdue_0_30');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 1, unpaid), 'within_statutory_limit');
+
+  // Day 15: Mid 0-30 window
+  assert.equal(categorizeInvoiceAging(amount, 0, 15), 'overdue_0_30');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 15, unpaid), 'within_statutory_limit');
+
+  // Day 30: EXACT upper boundary of early overdue window
+  assert.equal(categorizeInvoiceAging(amount, 0, 30), 'overdue_0_30');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 30, unpaid), 'within_statutory_limit');
+
+  // Day 31: EXACT lower boundary of 43B(h) warning window (approaching 45-day cliff)
+  assert.equal(categorizeInvoiceAging(amount, 0, 31), 'overdue_31_44');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 31, unpaid), 'approaching_deadline');
+
+  // Day 44: EXACT upper boundary of 43B(h) warning window (last day before statutory breach)
+  assert.equal(categorizeInvoiceAging(amount, 0, 44), 'overdue_31_44');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 44, unpaid), 'approaching_deadline');
+
+  // Day 45: EXACT statutory maximum credit period limit under MSMED Act 2006
+  // Under Section 15 of MSMED Act, payment terms cannot exceed 45 days.
+  // At 45 days overdue, it enters the statutory breach category.
+  assert.equal(categorizeInvoiceAging(amount, 0, 45), 'overdue_45_plus');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 45, unpaid), 'statutory_breach');
+
+  // Day 46: 1 day past statutory breach
+  assert.equal(categorizeInvoiceAging(amount, 0, 46), 'overdue_45_plus');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 46, unpaid), 'statutory_breach');
+
+  // Day 90: Severe overdue
+  assert.equal(categorizeInvoiceAging(amount, 0, 90), 'overdue_45_plus');
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 90, unpaid), 'statutory_breach');
+
+  // Non-MSME Supplier should NEVER report statutory breach
+  assert.equal(evaluateMsmeStatutoryStatus(false, isEligible, 60, unpaid), 'not_applicable');
+
+  // Settled/Paid Invoice should NEVER report statutory breach
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 60, true), 'not_applicable');
+
+  // Disputed Invoice pauses statutory breach evaluation
+  assert.equal(evaluateMsmeStatutoryStatus(isMsme, isEligible, 60, unpaid, true), 'not_applicable');
+});
+
+// 13. Future-Dated Invoices & Negative Days Overdue
+test('Future-Dated Invoices: Rigorous handling of negative days overdue and financial isolation', () => {
+  const amount = 120000;
+
+  // Due tomorrow: -1 day overdue
+  assert.equal(categorizeInvoiceAging(amount, 0, -1), 'current');
+  assert.equal(evaluateMsmeStatutoryStatus(true, true, -1, false), 'within_statutory_limit');
+
+  // Due in 15 days: -15 days overdue
+  assert.equal(categorizeInvoiceAging(amount, 0, -15), 'current');
+  assert.equal(evaluateMsmeStatutoryStatus(true, true, -15, false), 'within_statutory_limit');
+
+  // Due in 60 days: -60 days overdue
+  assert.equal(categorizeInvoiceAging(amount, 0, -60), 'current');
+  assert.equal(evaluateMsmeStatutoryStatus(true, true, -60, false), 'within_statutory_limit');
+
+  // Future-dated invoice with partial payment remains 'current'
+  assert.equal(categorizeInvoiceAging(amount, 40000, -10), 'current');
+
+  // Future-dated invoice fully paid becomes 'paid'
+  assert.equal(categorizeInvoiceAging(amount, 120000, -10), 'paid');
+
+  // Future-dated invoice with commercial dispute becomes 'disputed'
+  assert.equal(categorizeInvoiceAging(amount, 0, -10, true), 'disputed');
+
+  // Summary Aggregation: Future-dated invoices must NOT inflate overdue metrics
+  const futureInvoice: Invoice = {
+    id: 'inv_future_1',
+    workspaceId: 'ws_test',
+    invoiceNumber: 'INV-FUT-01',
+    customerName: 'Future Client Ltd',
+    customerPhone: '+91 98765 43210',
+    customerEmail: 'finance@futureclient.com',
+    issueDate: '2026-10-01',
+    dueDate: '2026-11-15',
+    totalAmount: 120000,
+    paidAmount: 0,
+    balanceAmount: 120000,
+    daysOverdue: -17,
+    status: 'current',
+    isMsmeEligible: true,
+    msmeStatutoryStatus: 'within_statutory_limit',
+    history: [],
+    createdAt: '2026-10-01T00:00:00Z',
+    updatedAt: '2026-10-01T00:00:00Z'
+  } as Invoice;
+
+  const summary = computeAgingSummary([futureInvoice], [], 'mtd');
+  // Total receivables includes the invoice balance
+  assert.equal(summary.totalReceivables, 120000);
+  // Current amount includes the invoice balance
+  assert.equal(summary.currentAmount, 120000);
+  assert.equal(summary.currentCount, 1);
+  // Total overdue amount and count MUST be strictly zero
+  assert.equal(summary.totalOverdueAmount, 0);
+  assert.equal(summary.overdueInvoicesCount, 0);
+  assert.equal(summary.overdue0to30Amount, 0);
+  assert.equal(summary.overdue31to44Amount, 0);
+  assert.equal(summary.overdue45PlusAmount, 0);
+  assert.equal(summary.statutory43BAtRiskAmount, 0);
+});
+
+// 14. Time of Day and Intra-Day Clock Invariance
+test('Time-of-Day Invariance: Validates that afternoon and late-night reference times do not drift calendar days', () => {
+  // Due date: Oct 29, 2026
+  const due = '2026-10-29';
+
+  // Evaluated on Oct 29 at 11:59:59 PM (end of day)
+  // Must STILL be 0 days overdue on Oct 29, never round up to 1 day!
+  const lateNightRef = new Date(2026, 9, 29, 23, 59, 59);
+  assert.equal(calculateDaysOverdue(due, lateNightRef), 0);
+
+  // Evaluated on Oct 29 at 00:00:01 AM (start of day)
+  const earlyMorningRef = new Date(2026, 9, 29, 0, 0, 1);
+  assert.equal(calculateDaysOverdue(due, earlyMorningRef), 0);
+
+  // Evaluated on Oct 30 at 00:00:01 AM (start of next day)
+  const nextDayRef = new Date(2026, 9, 30, 0, 0, 1);
+  assert.equal(calculateDaysOverdue(due, nextDayRef), 1);
+});
+
 console.log(`\nTest results: ${passed} passed, ${failed} failed.\n`);
 if (failed > 0) {
   process.exit(1);
